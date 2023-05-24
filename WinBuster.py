@@ -1,7 +1,6 @@
 import os
 import threading
 import time
-import re
 import requests
 import tkinter
 import ttkbootstrap as ttk
@@ -183,17 +182,15 @@ class DirBusterGUI:
         # Start the main loop
         self.root.mainloop()
 
-    def calculate_score(self, url):
+    def calculate_score(self, url, sensitive_extensions, sensitive_directories):
         """
         Calculate a score for a URL based on potentially sensitive file extensions and directory names.
         The higher the score, the more likely the URL points to a sensitive resource.
         """
         score = 0
-        sensitive_extensions = {'.sql', '.bak', '.tar', '.gz', '.zip', '.log', '.txt', '.log'}
         for ext in sensitive_extensions:
             if url.endswith(ext):
                 score += 5
-        sensitive_directories = {'admin', 'backup', 'conf', 'config', 'database', 'secret', 'uploads'}
         for directory in sensitive_directories:
             if directory in url.lower():
                 score += 3
@@ -207,21 +204,25 @@ class DirBusterGUI:
         """
         try:
             result = urlparse(url)
-            return all([result.scheme, result.netloc])
-        except ValueError:
-            print("Bad URL")
+            if all([result.scheme, result.netloc]):
+                response = requests.head(url)
+                return response.status_code < 400
+            return False
+        except (ValueError, requests.exceptions.RequestException):
             return False
 
-    def is_valid_input(self, value, min_value=None, max_value=None):
-        pattern = r'^\d+$' if isinstance(min_value, int) else r'^\d+(\.\d+)?$'
-        if not re.match(pattern, value):
-            return False
-        num = int(value) if isinstance(min_value, int) else float(value)
-        if min_value is not None and num < min_value:
-            return False
-        if max_value is not None and num > max_value:
-            return False
-        return True
+    def is_valid_input(self, input_value, min_value):
+        """
+        Check if an input value is a valid integer greater than or equal to a minimum value.
+        """
+        try:
+            value = int(input_value)
+            if value >= min_value:
+                return True
+            else:
+                return f"Value must be greater than or equal to {min_value}"
+        except ValueError:
+            return "Value must be an integer"
 
     def browse_wordlist(self):
         """
@@ -229,22 +230,28 @@ class DirBusterGUI:
         """
         file_path = filedialog.askopenfilename(filetypes=[("Text files", "*.txt")])
         if file_path:
-            self.queue.queue.clear()
-            self.wordlist_file = file_path
-            file_name = os.path.basename(file_path)
-            self.wordlist_name_label.configure(text=file_name)
-            self.wordlist_loaded = True
-            print("Wordlist loaded:", file_path)
-            with open(file_path, 'r') as wordlist_file:
-                self.wordlist_size = sum(1 for _ in wordlist_file)
-            print(self.wordlist_size, "entries.")
-            self.wordlist_progress_text.set(f"0/{self.wordlist_size}")
-            self.progress.configure(maximum=self.wordlist_size)
+            if file_path.endswith('.txt'):
+                self.queue.queue.clear()
+                self.wordlist_file = file_path
+                file_name = os.path.basename(file_path)
+                self.wordlist_name_label.configure(text=file_name)
+                self.wordlist_loaded = True
+                print("Wordlist loaded:", file_path)
+                with open(file_path, 'r') as wordlist_file:
+                    self.wordlist_size = sum(1 for _ in wordlist_file)
+                print(self.wordlist_size, "entries.")
+                self.wordlist_progress_text.set(f"0/{self.wordlist_size}")
+                self.progress.configure(maximum=self.wordlist_size)
+            else:
+                messagebox.showerror("Error", "Please select a valid wordlist file (.txt)")
 
     def start(self):
         """
         Start the directory busting process. Validate the input and start the executor.
         """
+        if self.is_running.is_set():
+            messagebox.showerror("Error", "The program is already running.")
+            return
         self.scan_complete = ttk.Label(self.root, text="", width=100)
         self.scan_complete.grid(column=0, row=4, sticky="w", padx=440, pady=5)
         url = self.url_entry.get().strip()
@@ -285,20 +292,27 @@ class DirBusterGUI:
             futures = []
             while self.queue.qsize() > 0 or not all([f.done() for f in futures]):
                 url = self.queue.get()
-                futures = [executor.submit(self.dirbuster, url, timeout, delay, barrier, i, wordlist_chunks[i]) for i in
-                           range(num_threads)]
-                barrier.wait()
-                for future in futures:
-                    if self.is_running.is_set():
-                        future.result()
-                    else:
-                        break
+                try:
+                    futures = [executor.submit(self.dirbuster, url, timeout, delay, barrier, i, wordlist_chunks[i]) for
+                               i in
+                               range(num_threads)]
+                    barrier.wait()
+                    for future in futures:
+                        if self.is_running.is_set():
+                            future.result()
+                        else:
+                            break
+                except Exception as e:
+                    print(f"Exception encountered when submitting task to executor: {e}")
         self.stop()
 
     def stop(self):
         """
         Stop the directory busting process. Update the UI to reflect the stopped state.
         """
+        if not self.is_running.is_set():
+            messagebox.showerror("Error", "The program is not currently running.")
+            return
         self.wordlist_progress = self.processed_count
         if self.queue.qsize() > 0:
             self.animate_stopping_label()
@@ -331,6 +345,20 @@ class DirBusterGUI:
         high_score_threshold = 6
         medium_score_threshold = 3
 
+        # Define sensitive extensions and directories here
+        sensitive_directories = [
+            'admin', 'backup', 'conf', 'config', 'database', 'secret', 'uploads', 'download',
+            'log', 'private', 'secure', 'test', 'tmp', 'old', 'data', 'bin', 'etc', 'lib',
+            'mail', 'module', 'service', 'system', 'user', 'var', 'wp-admin', 'wp-content',
+            'wp-includes'
+        ]
+
+        sensitive_extensions = [
+            '.sql', '.bak', '.tar', '.gz', '.zip', '.log', '.txt', '.old', '.backup', '.swp',
+            '.conf', '.ini', '.htaccess', '.php', '.asp', '.aspx', '.jsp', '.cgi', '.pl',
+            '.json', '.xml', '.yml', '.yaml', '.env', '.pwd', '.key', '.cert', '.pem'
+        ]
+
         barrier.wait()  # Wait for all threads to start
 
         for word in wordlist:
@@ -356,7 +384,8 @@ class DirBusterGUI:
                 self.wordlist_progress_text.set(f"{self.processed_count}/{self.wordlist_size}")
                 if response.status_code in [200, 204, 301, 302, 307] and response.url.rstrip("/") != base_url.rstrip(
                         "/"):
-                    score = self.calculate_score(url)
+                    # Provide sensitive_extensions and sensitive_directories as parameters
+                    score = self.calculate_score(url, sensitive_extensions, sensitive_directories)
                     content_type = response.headers.get("Content-Type")
                     if content_type and "text/html" in content_type:
                         result_text_widget = self.directories_text
