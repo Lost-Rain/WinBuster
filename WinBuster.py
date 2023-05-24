@@ -183,15 +183,16 @@ class DirBusterGUI:
         # Start the main loop
         self.root.mainloop()
 
-    # START LOGIC #
     def calculate_score(self, url):
+        """
+        Calculate a score for a URL based on potentially sensitive file extensions and directory names.
+        The higher the score, the more likely the URL points to a sensitive resource.
+        """
         score = 0
-        # Increase score based on potentially sensitive file extensions
         sensitive_extensions = {'.sql', '.bak', '.tar', '.gz', '.zip', '.log', '.txt', '.log'}
         for ext in sensitive_extensions:
             if url.endswith(ext):
                 score += 5
-        # Increase score based on potentially sensitive directory names
         sensitive_directories = {'admin', 'backup', 'conf', 'config', 'database', 'secret', 'uploads'}
         for directory in sensitive_directories:
             if directory in url.lower():
@@ -200,8 +201,10 @@ class DirBusterGUI:
 
     @staticmethod
     def is_valid_url(url):
-        if not url.startswith("http://") and not url.startswith("https://"):
-            url = "https://" + url
+        """
+        Check if a URL is valid. A valid URL must start with "http://" or "https://"
+        and must be able to be parsed into its components (scheme, netloc, etc.).
+        """
         try:
             result = urlparse(url)
             return all([result.scheme, result.netloc])
@@ -221,25 +224,27 @@ class DirBusterGUI:
         return True
 
     def browse_wordlist(self):
+        """
+        Open a file dialog to select a wordlist file. Load the wordlist into a queue.
+        """
         file_path = filedialog.askopenfilename(filetypes=[("Text files", "*.txt")])
         if file_path:
-            # Clear the queue before loading a new wordlist
             self.queue.queue.clear()
             self.wordlist_file = file_path
             file_name = os.path.basename(file_path)
             self.wordlist_name_label.configure(text=file_name)
             self.wordlist_loaded = True
-            print("Wordlist loaded:", file_path)  # Debugging statement added
-            # Calculate number of wordlist entries
+            print("Wordlist loaded:", file_path)
             with open(file_path, 'r') as wordlist_file:
                 self.wordlist_size = sum(1 for _ in wordlist_file)
             print(self.wordlist_size, "entries.")
             self.wordlist_progress_text.set(f"0/{self.wordlist_size}")
-            # Update the progress bar maximum value and reset the progress value
             self.progress.configure(maximum=self.wordlist_size)
 
     def start(self):
-        # URL label
+        """
+        Start the directory busting process. Validate the input and start the executor.
+        """
         self.scan_complete = ttk.Label(self.root, text="", width=100)
         self.scan_complete.grid(column=0, row=4, sticky="w", padx=440, pady=5)
         url = self.url_entry.get().strip()
@@ -255,39 +260,33 @@ class DirBusterGUI:
         timeout = float(timeout)
         delay = float(delay)
         if url and self.wordlist_loaded and self.is_valid_url(url):
-            if not url.startswith("http://") and not url.startswith("https://"):
-                url = "https://" + url
             self.is_running.set()
             self.start_button.config(state="disabled")
             self.stop_button.config(state="normal")
-            # Load the wordlist into a list
             with open(self.wordlist_file, 'r') as wordlist_file:
                 wordlist = [line.strip() for line in wordlist_file][self.wordlist_progress:]
             self.wordlist_progress_text.set(f"{self.wordlist_progress}/{self.wordlist_size}")
-
-            # Add the base URL to the queue
             self.queue.put(url)
-            # Run the executor in a separate thread
             threading.Thread(target=self.run_executor, args=(num_threads, url, timeout, delay, wordlist)).start()
         else:
             messagebox.showerror("Error", "Please enter a valid URL and wordlist.")
 
     def run_executor(self, num_threads, url, timeout, delay, wordlist):
-        barrier = threading.Barrier(num_threads + 1)  # Add 1 for the main thread
+        """
+        Run the executor in a separate thread. Divide the wordlist among the threads.
+        """
+        barrier = threading.Barrier(num_threads + 1)
         self.current_url_list = [""] * num_threads
         self.processed_count = 0
-
-        # Divide the wordlist among the threads
         wordlist_chunks = [[] for _ in range(num_threads)]
         for i, word in enumerate(wordlist):
             wordlist_chunks[i % num_threads].append(word)
-
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
-            futures = []  # Initialize futures as an empty list
+            futures = []
             while self.queue.qsize() > 0 or not all([f.done() for f in futures]):
-                url = self.queue.get()  # Get a URL from the queue
+                url = self.queue.get()
                 futures = [executor.submit(self.dirbuster, url, timeout, delay, barrier, i, wordlist_chunks[i]) for i in
-                           range(num_threads)]  # Pass 'wordlist_chunks[i]' to the 'dirbuster' method
+                           range(num_threads)]
                 barrier.wait()
                 for future in futures:
                     if self.is_running.is_set():
@@ -297,6 +296,9 @@ class DirBusterGUI:
         self.stop()
 
     def stop(self):
+        """
+        Stop the directory busting process. Update the UI to reflect the stopped state.
+        """
         self.wordlist_progress = self.processed_count
         if self.queue.qsize() > 0:
             self.animate_stopping_label()
@@ -310,7 +312,6 @@ class DirBusterGUI:
         self.delay_entry.config(state="normal")
         self.browse_button.config(state="normal")
         self.current_url_text.set("none")
-        # DEBUG: Print when the process is stopped
         print("Process stopped")
 
     def animate_stopping_label(self):
@@ -363,7 +364,7 @@ class DirBusterGUI:
                             if response.url != url:
                                 new_path = response.url
                             else:
-                                new_path = word
+                                new_path = urljoin(base_url, word)
                             self.queue.put(new_path)
                             self.directories_in_queue.set(str(int(self.directories_in_queue.get()) + 1))
                             added_to_queue_text = " (ADDED TO QUEUE)"
